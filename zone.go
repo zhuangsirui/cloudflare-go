@@ -1,9 +1,12 @@
 package cloudflare
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -97,6 +100,36 @@ type zoneRatePlanComponents struct {
 // ZoneID contains only the zone ID.
 type ZoneID struct {
 	ID string `json:"id"`
+}
+
+// ZoneImportRequest is the data required for a zone import bind config request
+type ZoneImportRequest struct {
+	File    io.ReadCloser
+	Proxied bool
+}
+
+// write writes the bind config to a multipart writer,
+// so it can be used in an HTTP request.
+func (r ZoneImportRequest) write(mpw *multipart.Writer) error {
+	if r.File == nil {
+		return errors.New("a bind config file must be specified")
+	}
+	part, err := mpw.CreateFormFile("file", "bind_config.txt")
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(part, r.File)
+	r.File.Close()
+	if err != nil {
+		return err
+	}
+
+	err = mpw.WriteField("proxied", strconv.FormatBool(r.Proxied))
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // ZoneResponse represents the response from the Zone endpoint containing a single zone.
@@ -197,6 +230,18 @@ type ZoneAnalyticsColocation struct {
 type zoneAnalyticsColocationResponse struct {
 	Response
 	Result []ZoneAnalyticsColocation `json:"result"`
+}
+
+// ZoneImport contains the response from the Zone Import
+type ZoneImport struct {
+	RecsAdded          int64 `json:"recs_added"`
+	TotalRecordsParsed int64 `json:"total_records_parsed"`
+}
+
+// zoneImportResponse represents the response from the Zone Import endpoint
+type zoneImportResponse struct {
+	Result ZoneImport `json:"result"`
+	Response
 }
 
 // ZoneAnalytics contains analytics data for a zone.
@@ -942,6 +987,28 @@ func (api *API) ZoneExport(ctx context.Context, zoneID string) (string, error) {
 		return "", err
 	}
 	return string(res), nil
+}
+
+// ZoneImport upload the text BIND config for the given zone
+//
+// API reference: https://api.cloudflare.com/#dns-records-for-a-zone-import-dns-records
+func (api *API) ZoneImport(ctx context.Context, zoneID string, bindConfig ZoneImportRequest) (ZoneImport, error) {
+	body := &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	w.Close()
+	if err := bindConfig.write(w); err != nil {
+		return ZoneImport{}, errors.Wrap(err, "error writing multipart body")
+	}
+	res, err := api.makeRequestContext(ctx, http.MethodPost, "/zones/"+zoneID+"/dns_records/import", body)
+	if err != nil {
+		return ZoneImport{}, err
+	}
+	var response zoneImportResponse
+	err = json.Unmarshal(res, &response)
+	if err != nil {
+		return ZoneImport{}, errors.Wrap(err, errUnmarshalError)
+	}
+	return response.Result, nil
 }
 
 // ZoneDNSSECResponse represents the response from the Zone DNSSEC Setting.

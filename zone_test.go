@@ -1,11 +1,13 @@
 package cloudflare
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"   //nolint:gosec
 	"encoding/hex" // for generating IDs
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -1221,6 +1223,50 @@ func TestZonePartialHasVerificationKey(t *testing.T) {
 	if assert.NoError(t, err) {
 		assert.NotEmpty(t, z.VerificationKey)
 		assert.Equal(t, z.VerificationKey, "foo-bar")
+	}
+}
+
+func TestZoneImport(t *testing.T) {
+	setup()
+	defer teardown()
+
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method, "Expected method 'POST', got %s", r.Method)
+		w.Header().Set("content-type", "application/json")
+		// JSON data from: https://api.cloudflare.com/#dnssec-properties
+		fmt.Fprintf(w, `{
+			"success": true,
+			"errors": [],
+			"messages": [],
+			"result": {
+				"recs_added": 5,
+				"total_records_parsed": 5
+			},
+			"timing": {
+				"start_time": "2014-03-01T12:20:00Z",
+				"end_time": "2014-03-01T12:20:01Z",
+				"process_time": 1
+			}
+		}`)
+	}
+	mux.HandleFunc("/zones/foo/dns_records/import", handler)
+
+	bindConfig := []byte(`
+		$ORIGIN example.com.
+		$TTL 3600
+		mail           IN  A     192.0.2.3
+		mail2          IN  A     192.0.2.3
+		mail3          IN  A     192.0.2.3
+		mail4          IN  A     192.0.2.3
+		mail5          IN  A     192.0.2.3
+	`)
+	req := ZoneImportRequest{
+		File: ioutil.NopCloser(bytes.NewReader(bindConfig)),
+	}
+	z, err := client.ZoneImport(context.Background(), "foo", req)
+	if assert.NoError(t, err) {
+		assert.Equal(t, z.RecsAdded, int64(5))
+		assert.Equal(t, z.TotalRecordsParsed, int64(5))
 	}
 }
 
